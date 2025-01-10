@@ -1,12 +1,18 @@
-0.8.0   (not yet released)
-        lexer has new option to output an invalid token on some kinds of
+0.8.0   lexer has new option to output an invalid token on some kinds of
           parse errors
         switch tests to hspec
         improve parse error messages
+	* and x.* changed to only parse in some expression contexts -
+  	  select items and function application argument lists
+	support sqlite 'without rowid'
+	make types in columndefs optional
+	allow column constraints and defaults to be in arbitrary order
+	partially support parentheses at query expression level (some nested parens don't parse yet)
 0.7.1   fix error message source quoting
 0.7.0   support autoincrement for sqlite
 	support table constraints without separating comma for sqlite
 	switch source from literate to regular haskell
+	use megaparsec instead of parsec
 	use prettyprinter lib instead of pretty
 	parsing nested block comments regressed - post a bug if you need this
 	fixed fixity parsing of union, except and intersect (matches postgres docs now)

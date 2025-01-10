@@ -651,7 +651,11 @@ scalar expression parens, row ctor and scalar subquery
 
 parensExpr :: Parser ScalarExpr
 parensExpr = parens $ choice
-    [SubQueryExpr SqSq <$> queryExpr
+    -- no parens here used for nested parens expressions
+    -- this could be fixed to be general with some refactoring, but at
+    -- the moment, you can't use additional redundant parens in a
+    -- subqueryexpr
+    [SubQueryExpr SqSq <$> queryExprNoParens
     ,ctor <$> commaSep1 scalarExpr]
   where
     ctor [a] = Parens a
@@ -1443,7 +1447,9 @@ from = label "from" (keyword_ "from" *> commaSep1 tref)
     nonJoinTref =
         label "table ref" $ choice
         [hidden $ parens $ choice
-             [TRQueryExpr <$> queryExpr
+             -- will be tricky to figure out how to support mixes of nested
+             -- query expr parens and table ref parens
+             [TRQueryExpr <$> queryExprNoParens
              ,TRParens <$> tref]
         ,TRLateral <$> (hidden (keyword_ "lateral") *> nonJoinTref)
         ,do
@@ -1586,9 +1592,18 @@ and union, etc..
 -}
 
 queryExpr :: Parser QueryExpr
-queryExpr = label "query expr" $ E.makeExprParser qeterm qeOpTable
+queryExpr = queryExpr' True
+queryExprNoParens :: Parser QueryExpr
+queryExprNoParens = queryExpr' False
+
+queryExpr' :: Bool -> Parser QueryExpr
+queryExpr' allowParens = label "query expr" $ E.makeExprParser qeterm qeOpTable
   where
-    qeterm = label "query expr" (with <|> select <|> table <|> values)
+    qeterm
+        | allowParens =
+              label "query expr" (with <|> select <|> table <|> values <|> qeParens)
+        | otherwise =
+              label "query expr" (with <|> select <|> table <|> values)
 
     select = keyword_ "select" >>
         mkSelect
@@ -1602,6 +1617,7 @@ queryExpr = label "query expr" $ E.makeExprParser qeterm qeOpTable
     values = keyword_ "values"
              >> Values <$> commaSep (parens (commaSep scalarExpr))
     table = keyword_ "table" >> Table <$> names "table name"
+    qeParens = QueryExprParens <$> parens queryExpr
 
     qeOpTable =
         [[E.InfixL $ setOp Intersect "intersect"]
@@ -1737,23 +1753,11 @@ createIndex =
     <*> parens (commaSep1 (name "column name"))
 
 columnDef :: Parser ColumnDef
-columnDef = ColumnDef <$> name "column name" <*> typeName
-            <*> optional defaultClause
-            <*> option [] (some colConstraintDef)
-  where
-    defaultClause = label "column default clause" $ choice [
-        keyword_ "default" >>
-        DefaultClause <$> scalarExpr
-        -- todo: left factor
-       ,try (keywords_ ["generated","always","as"] >>
-             GenerationClause <$> parens scalarExpr)
-       ,keyword_ "generated" >>
-        IdentityColumnSpec
-        <$> (GeneratedAlways <$ keyword_ "always"
-             <|> GeneratedByDefault <$ keywords_ ["by", "default"])
-        <*> (keywords_ ["as", "identity"] *>
-             option [] (parens sequenceGeneratorOptions))
-       ]
+columnDef = do
+  optionalType <- askDialect diOptionalColumnTypes
+  ColumnDef <$> name "column name"
+    <*> (if optionalType then optional typeName else Just <$> typeName)
+    <*> option [] (some colConstraintDef)
 
 tableConstraintDef :: Parser (Maybe [Name], TableConstraint)
 tableConstraintDef =
@@ -1802,7 +1806,14 @@ colConstraintDef :: Parser ColConstraintDef
 colConstraintDef =
     ColConstraintDef
     <$> optional (keyword_ "constraint" *> names "constraint name")
-    <*> (nullable <|> notNull <|> unique <|> primaryKey <|> check <|> references)
+    <*> (nullable
+          <|> notNull
+          <|> unique
+          <|> primaryKey
+          <|> check
+          <|> references
+          <|> defaultClause
+        )
   where
     nullable = ColNullableConstraint <$ keyword "null"
     notNull = ColNotNullConstraint <$ keywords_ ["not", "null"]
@@ -1821,6 +1832,20 @@ colConstraintDef =
         <*> optional (parens $ name "column name")
         <*> refMatch
         <*> refActions
+    defaultClause = label "column default clause" $
+        ColDefaultClause <$> choice
+          [keyword_ "default"
+             >> DefaultClause <$> scalarExpr
+          -- todo: left factor
+          ,try (keywords_ ["generated","always","as"] >>
+             GenerationClause <$> parens scalarExpr)
+          ,keyword_ "generated" >>
+            IdentityColumnSpec
+            <$> (GeneratedAlways <$ keyword_ "always"
+                <|> GeneratedByDefault <$ keywords_ ["by", "default"])
+            <*> (keywords_ ["as", "identity"] *>
+                option [] (parens sequenceGeneratorOptions))
+          ]
 
 -- slightly hacky parser for signed integers
 
